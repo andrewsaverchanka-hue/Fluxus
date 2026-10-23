@@ -1,0 +1,78 @@
+name: Build Fluxus Release
+
+# Запускается при push тега вида v1.0.0, v1.0.1, v2.3.4 и т.д.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  # Также можно запускать вручную из вкладки Actions
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      # ===== 1. Скачиваем код =====
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ===== 2. Устанавливаем Python =====
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ===== 3. Устанавливаем зависимости =====
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # ===== 4. Собираем .exe через PyInstaller =====
+      - name: Build .exe with PyInstaller
+        run: |
+          pyinstaller --onefile --windowed `
+            --name Fluxus `
+            --icon logo.png `
+            --add-data "assets;assets" `
+            --add-data "logo.png;." `
+            --add-data "logo_full.png;." `
+            main.py
+
+      # ===== 5. Проверяем, что .exe собрался =====
+      - name: Verify build
+        run: |
+          if (Test-Path "dist/Fluxus.exe") {
+            Write-Host "✓ Fluxus.exe собран успешно"
+            Get-Item "dist/Fluxus.exe" | Format-List Name, Length, LastWriteTime
+          } else {
+            Write-Error "✗ Fluxus.exe не найден в dist/"
+            exit 1
+          }
+
+      # ===== 6. Создаём GitHub Release и прикладываем .exe =====
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: Fluxus ${{ github.ref_name }}
+          body: |
+            ## Fluxus ${{ github.ref_name }}
+
+            Автоматическая сборка через GitHub Actions.
+
+            **Скачать:** `Fluxus.exe` ниже в разделе Assets.
+
+            ### Установка
+            1. Скачай `Fluxus.exe`
+            2. Запусти — приложение готово к работе
+            3. Иконка `logo.png` и ассеты уже вшиты в .exe
+          files: |
+            dist/Fluxus.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
