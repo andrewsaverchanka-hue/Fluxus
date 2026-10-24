@@ -1,19 +1,43 @@
 """Константы и пути приложения."""
 
+import sys
 from pathlib import Path
 
-# Корень проекта
+# ============================================================================
+# ОПРЕДЕЛЕНИЕ БАЗОВЫХ ПУТЕЙ
+# ============================================================================
+# В dev-режиме (python main.py) PROJECT_ROOT — корень проекта.
+# В .exe-режиме (PyInstaller --onefile) __file__ указывает на распакованную
+# _MEI... папку в %TEMP%, которая удаляется при закрытии. Поэтому для
+# пользовательских данных (config, downloaded_logs, update_tmp) используем
+# директорию рядом с .exe — sys.executable.parent.
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+if getattr(sys, 'frozen', False):
+    # Запущено как PyInstaller .exe
+    USER_DATA_DIR = Path(sys.executable).resolve().parent
+else:
+    # Запущено как python main.py (dev-режим)
+    USER_DATA_DIR = PROJECT_ROOT
+
+# ============================================================================
+# ПОЛЬЗОВАТЕЛЬСКИЕ ДИРЕКТОРИИ (рядом с .exe или в корне проекта)
+# ============================================================================
+
 # Директория для скачанных логов
-DOWNLOADED_LOGS_DIR = PROJECT_ROOT / "downloaded_logs"
+DOWNLOADED_LOGS_DIR = USER_DATA_DIR / "downloaded_logs"
 DOWNLOADED_LOGS_DIR.mkdir(exist_ok=True)
 
-# Директория для временных файлов обновления
-UPDATE_TMP_DIR = PROJECT_ROOT / "update_tmp"
+# Директория для временных файлов обновления (куда качается новый .exe)
+UPDATE_TMP_DIR = USER_DATA_DIR / "update_tmp"
 
 # Путь к пользовательскому конфигу
-CONFIG_FILE = PROJECT_ROOT / "config.json"
+CONFIG_FILE = USER_DATA_DIR / "config.json"
+
+# ============================================================================
+# Остальное — без изменений
+# ============================================================================
 
 # Шлюз SSH — транзитный сервер, через который идём на устройства по VPN
 SSH_GATEWAY = {
@@ -48,33 +72,19 @@ SIDEBAR_WIDTH = 240
 
 # =============================================================================
 # GREP-паттерны для стриминга логов с устройства.
-#
-# Используются в режиме «🌊 Открыть логи на устройстве». grep/zgrep фильтрует
-# на устройстве только нужные парсерам строки, уменьшая трафик по сети в 4-10 раз.
-#
-# Паттерны объединены через |, передаются в grep -E (extended regex).
-# Все паттерны парсятся парсерами из одной строки, многострочный контекст
-# не требуется (поэтому grep -A N не нужен).
 # =============================================================================
 
 LOG_GREP_PATTERNS = {
-    # devices_server-лог: Lima (BNV + stacked), LCDM2000, LCDM4000, Health,
-    # а также W2-инкассации (COLLECTION/Withdraw/Cash in — ловятся по rawTemplate).
     "devices": (
         'DEVICE_EVENT_TYPE_BILL_ACCEPTOR_BANKNOTE_'
         '|BanknoteValidator'
-        # ===== Lima-инкассации =====
         '|COLLECTION REPORT'
         '|Print.*notes='
-        # ===== W2 Low-Level (LCDM2000/LCDM4000) =====
         '|Handle Dispense Request:'
         '|Dispense worker:'
         '|Dispense: '
         '|CommandDispense:'
         '|LCDM4000 CCTalk:'
-        # ===== W2-инкассации в devices_server-логе =====
-        # Ловим Print-команду принтера с rawTemplate.
-        # Три типа rawTemplate: COLLECTION REPORT / Withdraw report / Cash in.
         '|Request: Print'
         '|Withdraw report'
         '|Cash in'
@@ -85,7 +95,6 @@ LOG_GREP_PATTERNS = {
         '|inByDatesAndNotes'
     ),
 
-    # skills-battle-frontend-лог: W2 Frontend + инкассации
     "frontend": (
         'payoutCoupon'
         '|INSERT INTO terminal_'
@@ -98,8 +107,6 @@ LOG_GREP_PATTERNS = {
         '|printSlip'
         '|Complete transaction'
         '|Redirect to HOME'
-        # ===== W2-инкассации в frontend-логе =====
-        # Эти строки нужны для парсинга boxes_delta и reject_delta.
         '|COLLECTION REPORT'
         '|Withdraw report'
         '|Cash in'
