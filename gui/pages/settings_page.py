@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal, QThread, QSize
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QFileDialog, QFrame, QCheckBox, QMessageBox,
+    QLineEdit, QFileDialog, QFrame, QCheckBox, QMessageBox, QProgressDialog
 )
 
 from config.config_manager import get_config
@@ -21,6 +21,10 @@ from gui.icon_loader import (
     ICON_COLOR_SUCCESS,
 )
 
+from updater.github_updater import (
+    check_latest_release, is_update_available,
+    download_update, install_update, is_frozen,   # ← новые
+)
 
 class UpdateCheckThread(QThread):
     """Проверка обновлений в фоне."""
@@ -30,6 +34,28 @@ class UpdateCheckThread(QThread):
         release = check_latest_release()
         self.result.emit(release)
 
+class UpdateDownloadThread(QThread):
+    """Фоновое скачивание обновления с сигналами прогресса."""
+
+    progress = Signal(int, int)      # (bytes_done, total_bytes)
+    finished_download = Signal(object)   # Path или None (ошибка/отмена)
+
+    def __init__(self, release, parent=None):
+        super().__init__(parent)
+        self.release = release
+        self._cancel = False
+
+    def cancel(self):
+        """Запрашивает отмену скачивания из UI-потока."""
+        self._cancel = True
+
+    def run(self):
+        result = download_update(
+            self.release,
+            progress_callback=lambda done, total: self.progress.emit(done, total),
+            cancel_check=lambda: self._cancel,
+        )
+        self.finished_download.emit(result)
 
 class SettingsPage(QWidget):
     """Страница настроек: SSH-ключ, автообновления."""
@@ -44,7 +70,100 @@ class SettingsPage(QWidget):
         self._update_thread: UpdateCheckThread | None = None
         self._build_ui()
         self._load_from_config()
+    def _start_download(self, release):
+        """Запускает скачивание обновления с прогресс-диалогом."""
+        # Проверка dev-режима
+        if not is_frozen():
+            QMessageBox.information(
+                self,
+                "Dev-режим",
+                "Обновления доступны только для собранной .exe-версии.\n\n"
+                "Сейчас вы запустили приложение через python main.py.\n"
+                "Для получения обновлений используйте Fluxus.exe."
+            )
+            return
 
+        # Прогресс-диалог
+        self._progress_dialog = QProgressDialog(
+            f"Скачивание {release.asset_name}...",
+            "Отмена",
+            0, 100,
+            self
+        )
+        self._progress_dialog.setWindowTitle("Обновление Fluxus")
+        self._progress_dialog.setWindowModality(Qt.WindowModal)
+        self._progress_dialog.setMinimumDuration(0)
+        self._progress_dialog.setValue(0)
+
+        # Фоновый поток скачивания
+        self._download_thread = UpdateDownloadThread(release, parent=self)
+        self._download_thread.progress.connect(self._on_download_progress)
+        self._download_thread.finished_download.connect(
+            self._on_download_finished
+        )
+
+        # Отмена из диалога → отмена потока
+        self._progress_dialog.canceled.connect(self._download_thread.cancel)
+
+        self.log_info.emit(f"Начало скачивания {release.asset_name}...")
+        self._download_thread.start()
+
+    def _on_download_progress(self, done, total):
+        """Обновление прогресс-бара."""
+        if total > 0:
+            percent = int((done / total) * 100)
+            self._progress_dialog.setValue(percent)
+            mb_done = done / (1024 * 1024)
+            mb_total = total / (1024 * 1024)
+            self._progress_dialog.setLabelText(
+                f"Скачивание... {mb_done:.1f} / {mb_total:.1f} МБ"
+            )
+
+    def _on_download_finished(self, result_path):
+        """Коллбек: скачивание завершено."""
+        self._progress_dialog.close()
+
+        if result_path is None:
+            # Либо отмена, либо ошибка
+            self.log_warning.emit("Скачивание отменено или произошла ошибка")
+            self._set_status(
+                "warning.svg",
+                "Скачивание не завершено. Попробуйте снова.",
+                color=ICON_COLOR_WARNING,
+            )
+            return
+
+        # Успешно скачано — предлагаем установить
+        self.log_info.emit(f"Скачано: {result_path.name}")
+        reply = QMessageBox.question(
+            self,
+            "Установить обновление?",
+            f"Обновление скачано:\n{result_path}\n\n"
+            f"Приложение закроется и запустится заново с новой версией.\n\n"
+            f"Установить сейчас?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply != QMessageBox.Yes:
+            self.log_info.emit(
+                f"Установка отложена. Файл сохранён: {result_path}"
+            )
+            return
+
+        # Запускаем установку
+        if install_update(result_path):
+            self.log_info.emit("Установка запущена. Приложение закроется...")
+            # Закрываем приложение — bat-скрипт заменит .exe и запустит новый
+            from PySide6.QtWidgets import QApplication
+            QApplication.instance().quit()
+        else:
+            QMessageBox.critical(
+                self,
+                "Ошибка установки",
+                "Не удалось запустить инсталлятор.\n"
+                f"Файл обновления сохранён:\n{result_path}\n\n"
+                f"Попробуйте запустить его вручную."
+            )
     # ------------------------------------------------------------------
     # UI
     # ------------------------------------------------------------------
@@ -303,10 +422,7 @@ class SettingsPage(QWidget):
                 QMessageBox.Yes | QMessageBox.No
             )
             if reply == QMessageBox.Yes:
-                self.log_info.emit(
-                    "Скачивание обновления будет реализовано в следующем релизе"
-                )
-                # TODO: добавить реальное скачивание и установку
+                self._start_download(release)
         else:
             self._set_status(
                 "success.svg",

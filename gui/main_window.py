@@ -201,28 +201,30 @@ class MainWindow(QMainWindow):
             self.stacked.setCurrentWidget(page)
 
     def _on_update_available_clicked(self):
-        """Пользователь нажал «Новая версия доступна» в сайдбаре [14]."""
+        """Клик по кнопке «Новая версия доступна» в сайдбаре."""
         if not self._latest_release:
             return
+
         release = self._latest_release
         body = release.body or ""
         if len(body) > 400:
             body = body[:400] + "..."
+
         reply = QMessageBox.question(
             self, "Доступна новая версия",
             f"Доступна версия {release.version}.\n"
             f"Текущая: {VERSION}\n\n"
             f"{body}\n\n"
-            f"Скачать обновление?",
+            f"Скачать и установить обновление?",
             QMessageBox.Yes | QMessageBox.No
         )
+
         if reply == QMessageBox.Yes:
-            # Переходим на страницу настроек [19] — там всё управление
+            # Переходим на страницу настроек — там прогресс-диалог
             self.sidebar.set_active_page("settings")
             self.stacked.setCurrentWidget(self.settings_page)
-            self.status_line.log_info(
-                "Скачивание обновления будет реализовано позже"
-            )
+            # Запускаем скачивание через настройки
+            self.settings_page._start_download(release)
 
     # ========================================================================
     # Проверка обновлений
