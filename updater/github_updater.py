@@ -2,6 +2,7 @@
 
 import re
 import sys
+import os
 import tempfile
 import subprocess
 from pathlib import Path
@@ -47,6 +48,36 @@ def get_current_exe_path() -> Path:
     if is_frozen():
         return Path(sys.executable)
     return Path(__file__).resolve().parent.parent / "main.py"
+
+
+def _get_short_path_windows(path: str) -> str:
+    """Возвращает short-path (8.3) для Windows-пути.
+
+    Short-paths не содержат кириллицы и пробелов, что критично для
+    BAT-скриптов в кодировке cp866. Пример:
+      C:\\Users\\Андрей Саверченко\\Downloads  →  C:\\Users\\930C~1\\Downloads
+
+    Если short-path получить не удалось — возвращает исходный путь.
+    """
+    if sys.platform != "win32":
+        return path
+    try:
+        import ctypes
+        from ctypes import wintypes
+        GetShortPathNameW = ctypes.windll.kernel32.GetShortPathNameW
+        GetShortPathNameW.argtypes = [
+            wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD
+        ]
+        GetShortPathNameW.restype = wintypes.DWORD
+
+        buf_size = 260
+        buf = ctypes.create_unicode_buffer(buf_size)
+        result = GetShortPathNameW(path, buf, buf_size)
+        if result > 0 and result < buf_size:
+            return buf.value
+    except Exception as e:
+        print(f"[Updater] GetShortPathName failed for {path}: {e}")
+    return path
 
 
 # ============================================================================
@@ -198,19 +229,18 @@ def install_update(new_exe_path: Path) -> bool:
     """Полный цикл установки через VBS-обёртку + BAT с retry.
 
     Схема:
-      1. Создаётся BAT-скрипт в системной TEMP с детальной логикой:
-         - taskkill процесса Fluxus.exe
-         - copy /Y с retry (до 30 попыток)
-         - запуск нового .exe через explorer.exe → start → schtasks
-      2. Создаётся VBS-скрипт, который запускает BAT в скрытом окне
-      3. VBS запускается через wscript.exe (легитимный системный процесс)
-      4. Windows Defender пропускает такую цепочку как доверенную
+      1. Все пути (current_exe, new_exe, temp_dir) конвертируются в short-path
+         (8.3 формат), чтобы BAT в cp866 корректно работал с кириллицей.
+      2. Создаётся BAT-скрипт с taskkill + copy /Y с retry.
+      3. Создаётся VBS-скрипт, который запускает BAT в скрытом окне.
+      4. VBS запускается через wscript.exe (легитимный системный процесс).
+      5. Windows Defender пропускает такую цепочку как доверенную.
 
     После успешного запуска приложение должно само завершиться
     (вызывающий код делает QApplication.instance().quit()).
 
     Args:
-        new_exe_path: путь к скачанному Fluxus.exe в UPDATE_TMP_DIR [1]
+        new_exe_path: путь к скачанному Fluxus.exe в UPDATE_TMP_DIR
 
     Returns:
         True если инсталлятор успешно запущен (можно закрывать приложение),
@@ -236,40 +266,62 @@ def install_update(new_exe_path: Path) -> bool:
         return False
 
     current_exe = Path(sys.executable).resolve()
-    app_dir = current_exe.parent
+    app_dir = str(current_exe.parent)
     exe_name = current_exe.name
 
-    # Все скрипты и логи — в системную TEMP (не в UPDATE_TMP_DIR!)
-    # Это важно для Defender: TEMP — ожидаемое место для системных скриптов.
-    temp_dir = Path(tempfile.gettempdir())
-    log_file = temp_dir / "fluxus_update.log"
-    bat_path = temp_dir / "fluxus_update.bat"
-    vbs_path = temp_dir / "fluxus_update.vbs"
+    # ====================================================================
+    # КРИТИЧНО: конвертируем ВСЕ пути в short-path (8.3) формат.
+    # BAT-файлы работают в кодировке cp866 и не могут обрабатывать
+    # кириллицу в путях (например, C:\Users\Андрей Саверченко\...).
+    # Short-path гарантирует ASCII-only путь (C:\Users\930C~1\...).
+    # ====================================================================
+    current_exe_short = _get_short_path_windows(str(current_exe))
+    app_dir_short = _get_short_path_windows(app_dir)
+    new_exe_short = _get_short_path_windows(str(new_exe_path))
 
-    print(f"[INSTALL] Папка приложения: {app_dir}")
-    print(f"[INSTALL] Имя exe: {exe_name}")
-    print(f"[INSTALL] BAT: {bat_path}")
-    print(f"[INSTALL] VBS: {vbs_path}")
+    # Системная TEMP-директория — тоже в short-path, т.к. у некоторых
+    # пользователей TEMP содержит кириллицу
+    temp_dir_orig = tempfile.gettempdir()
+    temp_dir_short = _get_short_path_windows(temp_dir_orig)
+
+    log_file = os.path.join(temp_dir_short, "fluxus_update.log")
+    bat_path = os.path.join(temp_dir_short, "fluxus_update.bat")
+    vbs_path = os.path.join(temp_dir_short, "fluxus_update.vbs")
+
+    print(f"[INSTALL] Short paths:")
+    print(f"  current: {current_exe} → {current_exe_short}")
+    print(f"  app_dir: {app_dir} → {app_dir_short}")
+    print(f"  new_file: {new_exe_path} → {new_exe_short}")
+    print(f"  temp: {temp_dir_orig} → {temp_dir_short}")
+    print(f"  BAT: {bat_path}")
+    print(f"  VBS: {vbs_path}")
 
     # Начальный лог
     try:
         with open(log_file, "w", encoding="utf-8") as f:
             f.write("=== Fluxus update prepared ===\n")
-            f.write(f"Current exe: {current_exe}\n")
-            f.write(f"App dir: {app_dir}\n")
-            f.write(f"Exe name: {exe_name}\n")
-            f.write(f"New file: {new_exe_path}\n")
+            f.write(f"Current exe (orig):  {current_exe}\n")
+            f.write(f"Current exe (short): {current_exe_short}\n")
+            f.write(f"App dir (short):     {app_dir_short}\n")
+            f.write(f"Exe name:            {exe_name}\n")
+            f.write(f"New file (orig):     {new_exe_path}\n")
+            f.write(f"New file (short):    {new_exe_short}\n")
             f.write("===\n\n")
     except Exception as e:
         print(f"[INSTALL] ⚠ Не удалось создать лог: {e}")
 
-    # BAT-скрипт: убить процесс, скопировать новый .exe с retry, запустить
+    # ====================================================================
+    # BAT-скрипт: убить процесс, скопировать новый .exe с retry, запустить.
+    # Использует short-paths везде — работает с любой кириллицей в путях.
+    # ====================================================================
     bat_content = f'''@echo off
 setlocal enabledelayedexpansion
+chcp 65001 >nul
 set "LOG={log_file}"
-set "EXE={current_exe}"
+set "EXE={current_exe_short}"
 set "EXE_NAME={exe_name}"
-set "NEWEXE={new_exe_path}"
+set "NEWEXE={new_exe_short}"
+set "APPDIR={app_dir_short}"
 
 echo. >> "%LOG%"
 echo ============================================ >> "%LOG%"
@@ -323,7 +375,7 @@ if !errorlevel! equ 0 (
     echo SUCCESS: New version is running >> "%LOG%"
 ) else (
     echo WARNING: Trying start command fallback... >> "%LOG%"
-    start "" /D "%~dp0" "%EXE%"
+    start "" /D "%APPDIR%" "%EXE%"
     timeout /t 3 /nobreak >nul
     tasklist /FI "IMAGENAME eq %EXE_NAME%" 2>nul | find /I "%EXE_NAME%" >nul
     if !errorlevel! equ 0 (
@@ -379,13 +431,13 @@ Set WshShell = Nothing
 
     try:
         proc = subprocess.Popen(
-            ["wscript.exe", str(vbs_path)],
+            ["wscript.exe", vbs_path],
             creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
             close_fds=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            cwd=str(temp_dir),
+            cwd=temp_dir_short,
         )
         print(f"[INSTALL] ✓ VBS запущен через wscript (PID: {proc.pid})")
         print(f"[INSTALL] Лог установки: {log_file}")
@@ -400,7 +452,7 @@ Set WshShell = Nothing
         try:
             CREATE_NO_WINDOW = 0x08000000
             proc = subprocess.Popen(
-                ["cmd.exe", "/c", str(bat_path)],
+                ["cmd.exe", "/c", bat_path],
                 creationflags=(
                     DETACHED_PROCESS |
                     CREATE_NEW_PROCESS_GROUP |
@@ -410,7 +462,7 @@ Set WshShell = Nothing
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                cwd=str(temp_dir),
+                cwd=temp_dir_short,
             )
             print(f"[INSTALL] ✓ BAT запущен напрямую (PID: {proc.pid})")
             return True
