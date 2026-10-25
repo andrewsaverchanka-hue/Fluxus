@@ -194,16 +194,14 @@ def download_update(
 # ============================================================================
 
 def prepare_installation(new_exe_path: Path) -> Optional[Path]:
-    """Создаёт bat-скрипт для замены Fluxus.exe и перезапуска.
+    """Создаёт bat-скрипт с подробным логированием.
 
-    Логика скрипта:
-      1. Ждёт 2 секунды (чтобы текущий .exe успел закрыться)
-      2. С повторными попытками (до 5 раз) перемещает новый .exe поверх старого
+    Логика:
+      1. Ждёт 5 секунд (с запасом, чтобы .exe точно освободил файл)
+      2. Пытается заменить файл с retry (до 10 попыток × 2 сек)
       3. Запускает обновлённый .exe
       4. Удаляет сам себя
-
-    Returns:
-        Path к bat-скрипту или None при ошибке.
+      5. Пишет каждый шаг в update_log.txt для диагностики
     """
     if not is_frozen():
         print("[Updater] Установка возможна только в .exe-режиме")
@@ -211,30 +209,62 @@ def prepare_installation(new_exe_path: Path) -> Optional[Path]:
 
     current_exe = Path(sys.executable).resolve()
     bat_path = UPDATE_TMP_DIR / "install_update.bat"
+    log_path = UPDATE_TMP_DIR / "install_log.txt"
+
+    # Экранируем пути (на всякий случай для путей с пробелами)
+    current_exe_str = str(current_exe)
+    new_exe_str = str(new_exe_path)
+    log_str = str(log_path)
 
     bat_content = f'''@echo off
 chcp 65001 >nul
-echo Обновление Fluxus...
-timeout /T 2 /NOBREAK >nul
+echo [%date% %time%] Install started > "{log_str}"
+echo [%date% %time%] current_exe="{current_exe_str}" >> "{log_str}"
+echo [%date% %time%] new_exe="{new_exe_str}" >> "{log_str}"
 
-:: Пробуем заменить файл с повторами (на случай блокировки .exe)
+echo [%date% %time%] Waiting 5 seconds for Fluxus.exe to close... >> "{log_str}"
+timeout /T 5 /NOBREAK >nul
+
+echo [%date% %time%] Attempting to replace file... >> "{log_str}"
+
 set RETRY=0
 :RETRY
-move /Y "{new_exe_path}" "{current_exe}" >nul 2>&1
+move /Y "{new_exe_str}" "{current_exe_str}" >> "{log_str}" 2>&1
 if %ERRORLEVEL% EQU 0 goto SUCCESS
+
 set /A RETRY=%RETRY%+1
-if %RETRY% LSS 5 (
-    timeout /T 1 /NOBREAK >nul
+echo [%date% %time%] Attempt %RETRY% failed (code %ERRORLEVEL%), retrying... >> "{log_str}"
+
+if %RETRY% LSS 10 (
+    timeout /T 2 /NOBREAK >nul
     goto RETRY
 )
-echo Не удалось обновить Fluxus.exe. Файл может быть заблокирован.
-echo Закройте приложение и попробуйте снова.
+
+echo [%date% %time%] FAILED after 10 attempts. File may be locked by antivirus or still running. >> "{log_str}"
+echo [%date% %time%] Trying taskkill as last resort... >> "{log_str}"
+taskkill /F /IM "Fluxus.exe" >> "{log_str}" 2>&1
+timeout /T 2 /NOBREAK >nul
+
+move /Y "{new_exe_str}" "{current_exe_str}" >> "{log_str}" 2>&1
+if %ERRORLEVEL% EQU 0 (
+    echo [%date% %time%] Replace succeeded after taskkill >> "{log_str}"
+    goto SUCCESS
+)
+
+echo [%date% %time%] FINAL FAILURE. Giving up. >> "{log_str}"
+echo [%date% %time%] You can manually replace: >> "{log_str}"
+echo    From: "{new_exe_str}" >> "{log_str}"
+echo    To:   "{current_exe_str}" >> "{log_str}"
 pause
 exit /B 1
 
 :SUCCESS
-echo Запуск обновлённого Fluxus...
-start "" "{current_exe}"
+echo [%date% %time%] File replaced successfully! >> "{log_str}"
+echo [%date% %time%] Starting new version... >> "{log_str}"
+start "" "{current_exe_str}"
+echo [%date% %time%] Done. >> "{log_str}"
+
+:: Удаляем сам себя (но лог оставляем для проверки)
 del "%~f0"
 '''
 
@@ -242,6 +272,7 @@ del "%~f0"
         with open(bat_path, 'w', encoding='utf-8') as f:
             f.write(bat_content)
         print(f"[Updater] Bat-скрипт создан: {bat_path}")
+        print(f"[Updater] Лог установки будет в: {log_path}")
         return bat_path
     except Exception as e:
         print(f"[Updater] Ошибка создания bat-скрипта: {e}")
