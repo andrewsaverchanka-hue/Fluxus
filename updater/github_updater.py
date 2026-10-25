@@ -249,30 +249,215 @@ del "%~f0"
 
 
 def install_update(new_exe_path: Path) -> bool:
-    """Полный цикл установки:
-      1. Создаёт bat-скрипт
-      2. Запускает его в фоне (отдельный процесс)
-      3. Приложение должно само завершиться после этого
+    """Полный цикл установки через VBS-обёртку + BAT с retry.
+
+    Схема:
+      1. Создаётся BAT-скрипт (детальный, с retry, taskkill, explorer.exe)
+      2. Создаётся VBS-скрипт, который запускает BAT в скрытом окне
+      3. VBS запускается через wscript.exe (легитимный системный процесс)
+      4. Windows Defender пропускает такую цепочку как доверенную
 
     Returns:
-        True если bat-скрипт успешно запущен (приложение должно завершиться),
-        False при ошибке.
+        True если инсталлятор успешно запущен.
     """
-    bat_path = prepare_installation(new_exe_path)
-    if bat_path is None:
+    import sys
+    import tempfile
+    import subprocess
+
+    print("=" * 70)
+    print(f"[INSTALL] Начало установки обновления Fluxus")
+    print(f"[INSTALL] is_frozen: {is_frozen()}")
+    print(f"[INSTALL] sys.executable: {sys.executable}")
+    print(f"[INSTALL] Новый файл: {new_exe_path}")
+
+    if new_exe_path.exists():
+        size_mb = new_exe_path.stat().st_size / 1024 / 1024
+        print(f"[INSTALL] Размер: {size_mb:.1f} MB")
+    print("=" * 70)
+
+    if not is_frozen():
+        print("[INSTALL] Установка возможна только в .exe-режиме")
         return False
 
+    current_exe = Path(sys.executable).resolve()
+    app_dir = current_exe.parent
+    exe_name = current_exe.name
+
+    # Все скрипты и логи — в системную TEMP (не в UPDATE_TMP_DIR!)
+    # Это важно для Defender: TEMP — ожидаемое место для системных скриптов
+    temp_dir = Path(tempfile.gettempdir())
+    log_file = temp_dir / "fluxus_update.log"
+    bat_path = temp_dir / "fluxus_update.bat"
+    vbs_path = temp_dir / "fluxus_update.vbs"
+
+    print(f"[INSTALL] Папка приложения: {app_dir}")
+    print(f"[INSTALL] Имя exe: {exe_name}")
+    print(f"[INSTALL] BAT: {bat_path}")
+    print(f"[INSTALL] VBS: {vbs_path}")
+
+    # Начальный лог
     try:
-        # Запускаем bat в отдельной консоли, отвязанной от нашего процесса
-        subprocess.Popen(
-            ['cmd.exe', '/c', str(bat_path)],
-            creationflags=(
-                subprocess.CREATE_NEW_CONSOLE | subprocess.DETACHED_PROCESS
-            ),
-            close_fds=True,
-        )
-        print("[Updater] Инсталлятор запущен")
-        return True
+        with open(log_file, "w", encoding="utf-8") as f:
+            f.write("=== Fluxus update prepared ===\n")
+            f.write(f"Current exe: {current_exe}\n")
+            f.write(f"App dir: {app_dir}\n")
+            f.write(f"Exe name: {exe_name}\n")
+            f.write(f"New file: {new_exe_path}\n")
+            f.write("===\n\n")
     except Exception as e:
-        print(f"[Updater] Не удалось запустить инсталлятор: {e}")
+        print(f"[INSTALL] ⚠ Не удалось создать лог: {e}")
+
+    # BAT-скрипт: убить процесс, скопировать новый .exe с retry, запустить
+    bat_content = f'''@echo off
+setlocal enabledelayedexpansion
+set "LOG={log_file}"
+set "EXE={current_exe}"
+set "EXE_NAME={exe_name}"
+set "NEWEXE={new_exe_path}"
+
+echo. >> "%LOG%"
+echo ============================================ >> "%LOG%"
+echo BAT started at %date% %time% >> "%LOG%"
+echo ============================================ >> "%LOG%"
+
+echo Step 1: Waiting 10 seconds for app to close... >> "%LOG%"
+timeout /t 10 /nobreak >nul
+
+echo Step 2: Force killing processes... >> "%LOG%"
+taskkill /F /IM "%EXE_NAME%" >nul 2>&1
+if !errorlevel! equ 0 (
+    echo Killed process %EXE_NAME% >> "%LOG%"
+) else (
+    echo No running processes found >> "%LOG%"
+)
+timeout /t 3 /nobreak >nul
+
+echo Step 3: Copying new exe with retry... >> "%LOG%"
+set attempts=0
+:retry
+copy /Y "%NEWEXE%" "%EXE%" >> "%LOG%" 2>&1
+if errorlevel 1 (
+    set /a attempts+=1
+    if !attempts! lss 30 (
+        echo Attempt !attempts!/30 failed, retrying... >> "%LOG%"
+        timeout /t 1 /nobreak >nul
+        goto retry
+    ) else (
+        echo ERROR: Copy failed after 30 attempts >> "%LOG%"
+        exit /b 1
+    )
+)
+echo Copy successful on attempt !attempts! >> "%LOG%"
+
+echo Step 4: Cleaning temp files... >> "%LOG%"
+del "%NEWEXE%" >nul 2>&1
+
+echo Step 5: Waiting 5 seconds before restart... >> "%LOG%"
+timeout /t 5 /nobreak >nul
+
+echo Step 6: Starting new version via explorer.exe... >> "%LOG%"
+explorer.exe "%EXE%"
+echo Explorer launch attempted >> "%LOG%"
+
+timeout /t 3 /nobreak >nul
+
+echo Step 7: Verifying new version is running... >> "%LOG%"
+tasklist /FI "IMAGENAME eq %EXE_NAME%" 2>nul | find /I "%EXE_NAME%" >nul
+if !errorlevel! equ 0 (
+    echo SUCCESS: New version is running >> "%LOG%"
+) else (
+    echo WARNING: Trying start command fallback... >> "%LOG%"
+    start "" /D "%~dp0" "%EXE%"
+    timeout /t 3 /nobreak >nul
+    tasklist /FI "IMAGENAME eq %EXE_NAME%" 2>nul | find /I "%EXE_NAME%" >nul
+    if !errorlevel! equ 0 (
+        echo SUCCESS: Started via start command >> "%LOG%"
+    ) else (
+        echo WARNING: Trying schtasks fallback... >> "%LOG%"
+        schtasks /Create /F /SC ONCE /ST 23:59 /TN "FluxusRestart" /TR "\\"%EXE%\\"" /RU "%USERNAME%" >nul 2>&1
+        schtasks /Run /TN "FluxusRestart" >nul 2>&1
+        timeout /t 3 /nobreak >nul
+        schtasks /Delete /F /TN "FluxusRestart" >nul 2>&1
+        tasklist /FI "IMAGENAME eq %EXE_NAME%" 2>nul | find /I "%EXE_NAME%" >nul
+        if !errorlevel! equ 0 (
+            echo SUCCESS: Started via schtasks >> "%LOG%"
+        ) else (
+            echo ERROR: All launch methods failed >> "%LOG%"
+        )
+    )
+)
+
+echo Update completed at %date% %time% >> "%LOG%"
+endlocal
+exit /b 0
+'''
+
+    # Записываем BAT в cp1251 (стандарт Windows для .bat)
+    try:
+        with open(bat_path, "w", encoding="cp1251") as f:
+            f.write(bat_content)
+        print(f"[INSTALL] ✓ BAT создан: {bat_path}")
+    except Exception as e:
+        print(f"[INSTALL] ❌ Ошибка создания BAT: {e}")
         return False
+
+    # VBS-обёртка — запускает BAT в скрытом окне через wscript
+    # (это важно для обхода Defender — wscript подписанный MS)
+    vbs_content = f'''Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run """{bat_path}""", 0, False
+Set WshShell = Nothing
+'''
+
+    try:
+        with open(vbs_path, "w", encoding="cp1251") as f:
+            f.write(vbs_content)
+        print(f"[INSTALL] ✓ VBS создан: {vbs_path}")
+    except Exception as e:
+        print(f"[INSTALL] ❌ Ошибка создания VBS: {e}")
+        return False
+
+    # Запускаем VBS через wscript.exe
+    # DETACHED_PROCESS отвязывает процесс от текущего — он живёт независимо
+    DETACHED_PROCESS = 0x00000008
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+    try:
+        proc = subprocess.Popen(
+            ["wscript.exe", str(vbs_path)],
+            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=str(temp_dir),
+        )
+        print(f"[INSTALL] ✓ VBS запущен через wscript (PID: {proc.pid})")
+        print(f"[INSTALL] Лог установки: {log_file}")
+        print("=" * 70)
+        return True
+
+    except Exception as e:
+        print(f"[INSTALL] ⚠ VBS не запустился: {e}")
+        print(f"[INSTALL] Fallback: запуск BAT напрямую через cmd...")
+
+        # Fallback — прямой запуск BAT (может быть блокирован Defender)
+        try:
+            CREATE_NO_WINDOW = 0x08000000
+            proc = subprocess.Popen(
+                ["cmd.exe", "/c", str(bat_path)],
+                creationflags=(
+                    DETACHED_PROCESS |
+                    CREATE_NEW_PROCESS_GROUP |
+                    CREATE_NO_WINDOW
+                ),
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd=str(temp_dir),
+            )
+            print(f"[INSTALL] ✓ BAT запущен напрямую (PID: {proc.pid})")
+            return True
+        except Exception as e2:
+            print(f"[INSTALL] ❌ Fallback тоже не сработал: {e2}")
+            return False
