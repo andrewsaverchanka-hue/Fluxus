@@ -5,10 +5,10 @@ from datetime import datetime, time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal, Slot, QDate, QSize
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
-    QFrame, QSpinBox, QRadioButton, QButtonGroup, QDateEdit,
+    QFrame, QRadioButton, QButtonGroup, QDateEdit,
     QMessageBox, QLineEdit, QScrollArea,
 )
 
@@ -47,6 +47,86 @@ class ClickableDateEdit(QDateEdit):
         super().mousePressEvent(event)
 
 
+class HoursInput(QLineEdit):
+    """Поле ввода часов с суффиксом ' ч' и валидацией 1..1440.
+
+    Замена QSpinBox — рендерится одинаково в dev-режиме и в .exe-сборке
+    PyInstaller (QSpinBox без кнопок иногда не отрисовывает текст из-за
+    отсутствия плагинов стилей Qt в .exe).
+
+    При фокусе суффикс убирается для редактирования, при потере фокуса —
+    возвращается с валидацией диапазона.
+    """
+
+    MIN_HOURS = 1
+    MAX_HOURS = 1440
+    DEFAULT_HOURS = 24
+    SUFFIX = " ч"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setText(f"{self.DEFAULT_HOURS}{self.SUFFIX}")
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumWidth(80)
+        self.setMaximumWidth(100)
+
+        # Валидатор на этапе ввода (без учёта суффикса)
+        self._validator = QIntValidator(self.MIN_HOURS, self.MAX_HOURS, self)
+
+        self.setStyleSheet("""
+            QLineEdit {
+                padding: 4px 8px;
+                color: #e4e5f1;
+                background-color: #2a2b40;
+                border: 1px solid #34354e;
+                border-radius: 6px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #6366f1;
+            }
+        """)
+        self.setToolTip(
+            "Количество часов для скачивания логов.\n"
+            "24 ч = 1 день, 168 ч = 7 дней,\n"
+            "720 ч = 30 дней, 1440 ч = 60 дней."
+        )
+
+    def focusInEvent(self, event):
+        """При получении фокуса убираем суффикс для удобного редактирования."""
+        text = self.text().replace(self.SUFFIX, "").strip()
+        self.setText(text)
+        self.setValidator(self._validator)
+        super().focusInEvent(event)
+        # Выделяем всё содержимое, чтобы пользователь мог сразу перепечатать
+        self.selectAll()
+
+    def focusOutEvent(self, event):
+        """При потере фокуса валидируем значение и возвращаем суффикс."""
+        self.setValidator(None)
+        text = self.text().strip().replace(self.SUFFIX, "")
+        try:
+            value = int(text)
+            value = max(self.MIN_HOURS, min(self.MAX_HOURS, value))
+        except (ValueError, TypeError):
+            value = self.DEFAULT_HOURS
+        self.setText(f"{value}{self.SUFFIX}")
+        super().focusOutEvent(event)
+
+    def value(self) -> int:
+        """Возвращает текущее числовое значение часов (API совместимо с QSpinBox)."""
+        text = self.text().strip().replace(self.SUFFIX, "")
+        try:
+            value = int(text)
+            return max(self.MIN_HOURS, min(self.MAX_HOURS, value))
+        except (ValueError, TypeError):
+            return self.DEFAULT_HOURS
+
+    def setValue(self, value: int) -> None:
+        """Устанавливает значение часов программно (API совместимо с QSpinBox)."""
+        value = max(self.MIN_HOURS, min(self.MAX_HOURS, int(value)))
+        self.setText(f"{value}{self.SUFFIX}")
+
+
 class ConnectorPage(QWidget):
     log_info = Signal(str)
     log_success = Signal(str)
@@ -73,7 +153,14 @@ class ConnectorPage(QWidget):
     def _make_header_row(self, icon_name: str, text: str,
                          icon_size: int = 28,
                          font_style: str = "pageTitle") -> QHBoxLayout:
-        """Создаёт горизонтальный layout: SVG-иконка слева + текст справа."""
+        """Создаёт горизонтальный layout: SVG-иконка слева + текст справа.
+
+        Args:
+            icon_name:  имя SVG-файла в assets/icons/
+            text:       текст заголовка
+            icon_size:  размер иконки в px
+            font_style: имя стиля для QLabel (objectName)
+        """
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
@@ -169,42 +256,9 @@ class ConnectorPage(QWidget):
         self.mode_group.addButton(self.mode_hours_rb, 0)
         period_layout.addWidget(self.mode_hours_rb)
 
-        # ============================================================
-        # QSpinBox часов — явная настройка шрифта/выравнивания/стиля
-        # для корректного отображения "24 ч" в .exe-сборке PyInstaller.
-        # Без этого иногда теряется суффикс в frozen-режиме.
-        # ============================================================
-        self.hours_spin = QSpinBox()
-        self.hours_spin.setRange(1, 1440)
-        self.hours_spin.setValue(24)
-        self.hours_spin.setSuffix(" ч")
-        self.hours_spin.setMinimumWidth(80)
-        self.hours_spin.setMaximumWidth(100)
-        self.hours_spin.setButtonSymbols(QSpinBox.NoButtons)
-        # Явный шрифт — защита от сброса в PyInstaller
-        self.hours_spin.setFont(QFont("Segoe UI", 10))
-        # Выравнивание по центру + явный цвет текста
-        self.hours_spin.setAlignment(Qt.AlignCenter)
-        self.hours_spin.setStyleSheet("""
-            QSpinBox {
-                padding: 4px 8px;
-                color: #e4e5f1;
-                background-color: #2a2b40;
-                border: 1px solid #34354e;
-                border-radius: 6px;
-                font-family: "Segoe UI", "Arial", sans-serif;
-                font-size: 10pt;
-                qproperty-alignment: AlignCenter;
-            }
-            QSpinBox:focus {
-                border: 1px solid #6366f1;
-            }
-        """)
-        self.hours_spin.setToolTip(
-            "Количество часов для скачивания логов.\n"
-            "24 ч = 1 день, 168 ч = 7 дней,\n"
-            "720 ч = 30 дней, 1440 ч = 60 дней."
-        )
+        # Поле часов — QLineEdit вместо QSpinBox для надёжного рендеринга
+        # в .exe-сборке PyInstaller
+        self.hours_spin = HoursInput()
         period_layout.addWidget(self.hours_spin)
 
         period_layout.addSpacing(20)
@@ -493,6 +547,7 @@ class ConnectorPage(QWidget):
 
     def _build_period_params(self) -> dict | None:
         if self.mode_hours_rb.isChecked():
+            # HoursInput имеет метод .value() совместимый с QSpinBox
             return {'mode': 'hours', 'params': {'hours': self.hours_spin.value()}}
         from_date = self.from_dt_edit.date().toPython()
         to_date = self.to_dt_edit.date().toPython()
