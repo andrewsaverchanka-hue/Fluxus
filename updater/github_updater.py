@@ -2,6 +2,7 @@
 
 import re
 import sys
+import tempfile
 import subprocess
 from pathlib import Path
 from dataclasses import dataclass
@@ -190,120 +191,44 @@ def download_update(
 
 
 # ============================================================================
-# Установка — создание bat-скрипта и запуск
+# Установка — создание BAT + VBS-обёртки для обхода Defender
 # ============================================================================
-
-def prepare_installation(new_exe_path: Path) -> Optional[Path]:
-    """Создаёт bat-скрипт с подробным логированием.
-
-    Логика:
-      1. Ждёт 5 секунд (с запасом, чтобы .exe точно освободил файл)
-      2. Пытается заменить файл с retry (до 10 попыток × 2 сек)
-      3. Запускает обновлённый .exe
-      4. Удаляет сам себя
-      5. Пишет каждый шаг в update_log.txt для диагностики
-    """
-    if not is_frozen():
-        print("[Updater] Установка возможна только в .exe-режиме")
-        return None
-
-    current_exe = Path(sys.executable).resolve()
-    bat_path = UPDATE_TMP_DIR / "install_update.bat"
-    log_path = UPDATE_TMP_DIR / "install_log.txt"
-
-    # Экранируем пути (на всякий случай для путей с пробелами)
-    current_exe_str = str(current_exe)
-    new_exe_str = str(new_exe_path)
-    log_str = str(log_path)
-
-    bat_content = f'''@echo off
-chcp 65001 >nul
-echo [%date% %time%] Install started > "{log_str}"
-echo [%date% %time%] current_exe="{current_exe_str}" >> "{log_str}"
-echo [%date% %time%] new_exe="{new_exe_str}" >> "{log_str}"
-
-echo [%date% %time%] Waiting 5 seconds for Fluxus.exe to close... >> "{log_str}"
-timeout /T 5 /NOBREAK >nul
-
-echo [%date% %time%] Attempting to replace file... >> "{log_str}"
-
-set RETRY=0
-:RETRY
-move /Y "{new_exe_str}" "{current_exe_str}" >> "{log_str}" 2>&1
-if %ERRORLEVEL% EQU 0 goto SUCCESS
-
-set /A RETRY=%RETRY%+1
-echo [%date% %time%] Attempt %RETRY% failed (code %ERRORLEVEL%), retrying... >> "{log_str}"
-
-if %RETRY% LSS 10 (
-    timeout /T 2 /NOBREAK >nul
-    goto RETRY
-)
-
-echo [%date% %time%] FAILED after 10 attempts. File may be locked by antivirus or still running. >> "{log_str}"
-echo [%date% %time%] Trying taskkill as last resort... >> "{log_str}"
-taskkill /F /IM "Fluxus.exe" >> "{log_str}" 2>&1
-timeout /T 2 /NOBREAK >nul
-
-move /Y "{new_exe_str}" "{current_exe_str}" >> "{log_str}" 2>&1
-if %ERRORLEVEL% EQU 0 (
-    echo [%date% %time%] Replace succeeded after taskkill >> "{log_str}"
-    goto SUCCESS
-)
-
-echo [%date% %time%] FINAL FAILURE. Giving up. >> "{log_str}"
-echo [%date% %time%] You can manually replace: >> "{log_str}"
-echo    From: "{new_exe_str}" >> "{log_str}"
-echo    To:   "{current_exe_str}" >> "{log_str}"
-pause
-exit /B 1
-
-:SUCCESS
-echo [%date% %time%] File replaced successfully! >> "{log_str}"
-echo [%date% %time%] Starting new version... >> "{log_str}"
-start "" "{current_exe_str}"
-echo [%date% %time%] Done. >> "{log_str}"
-
-:: Удаляем сам себя (но лог оставляем для проверки)
-del "%~f0"
-'''
-
-    try:
-        with open(bat_path, 'w', encoding='utf-8') as f:
-            f.write(bat_content)
-        print(f"[Updater] Bat-скрипт создан: {bat_path}")
-        print(f"[Updater] Лог установки будет в: {log_path}")
-        return bat_path
-    except Exception as e:
-        print(f"[Updater] Ошибка создания bat-скрипта: {e}")
-        return None
-
 
 def install_update(new_exe_path: Path) -> bool:
     """Полный цикл установки через VBS-обёртку + BAT с retry.
 
     Схема:
-      1. Создаётся BAT-скрипт (детальный, с retry, taskkill, explorer.exe)
+      1. Создаётся BAT-скрипт в системной TEMP с детальной логикой:
+         - taskkill процесса Fluxus.exe
+         - copy /Y с retry (до 30 попыток)
+         - запуск нового .exe через explorer.exe → start → schtasks
       2. Создаётся VBS-скрипт, который запускает BAT в скрытом окне
       3. VBS запускается через wscript.exe (легитимный системный процесс)
       4. Windows Defender пропускает такую цепочку как доверенную
 
-    Returns:
-        True если инсталлятор успешно запущен.
-    """
-    import sys
-    import tempfile
-    import subprocess
+    После успешного запуска приложение должно само завершиться
+    (вызывающий код делает QApplication.instance().quit()).
 
+    Args:
+        new_exe_path: путь к скачанному Fluxus.exe в UPDATE_TMP_DIR [1]
+
+    Returns:
+        True если инсталлятор успешно запущен (можно закрывать приложение),
+        False при ошибке (приложение остаётся работать).
+    """
     print("=" * 70)
-    print(f"[INSTALL] Начало установки обновления Fluxus")
+    print("[INSTALL] Начало установки обновления Fluxus")
     print(f"[INSTALL] is_frozen: {is_frozen()}")
     print(f"[INSTALL] sys.executable: {sys.executable}")
     print(f"[INSTALL] Новый файл: {new_exe_path}")
 
-    if new_exe_path.exists():
-        size_mb = new_exe_path.stat().st_size / 1024 / 1024
-        print(f"[INSTALL] Размер: {size_mb:.1f} MB")
+    # Проверка существования файла
+    if not new_exe_path or not new_exe_path.exists():
+        print(f"[INSTALL] ❌ Новый .exe не найден: {new_exe_path}")
+        return False
+
+    size_mb = new_exe_path.stat().st_size / 1024 / 1024
+    print(f"[INSTALL] Размер: {size_mb:.1f} MB")
     print("=" * 70)
 
     if not is_frozen():
@@ -315,7 +240,7 @@ def install_update(new_exe_path: Path) -> bool:
     exe_name = current_exe.name
 
     # Все скрипты и логи — в системную TEMP (не в UPDATE_TMP_DIR!)
-    # Это важно для Defender: TEMP — ожидаемое место для системных скриптов
+    # Это важно для Defender: TEMP — ожидаемое место для системных скриптов.
     temp_dir = Path(tempfile.gettempdir())
     log_file = temp_dir / "fluxus_update.log"
     bat_path = temp_dir / "fluxus_update.bat"
@@ -405,7 +330,7 @@ if !errorlevel! equ 0 (
         echo SUCCESS: Started via start command >> "%LOG%"
     ) else (
         echo WARNING: Trying schtasks fallback... >> "%LOG%"
-        schtasks /Create /F /SC ONCE /ST 23:59 /TN "FluxusRestart" /TR "\\"%EXE%\\"" /RU "%USERNAME%" >nul 2>&1
+        schtasks /Create /F /SC ONCE /ST 23:59 /TN "FluxusRestart" /TR "%EXE%" /RU "%USERNAME%" >nul 2>&1
         schtasks /Run /TN "FluxusRestart" >nul 2>&1
         timeout /t 3 /nobreak >nul
         schtasks /Delete /F /TN "FluxusRestart" >nul 2>&1
@@ -469,7 +394,7 @@ Set WshShell = Nothing
 
     except Exception as e:
         print(f"[INSTALL] ⚠ VBS не запустился: {e}")
-        print(f"[INSTALL] Fallback: запуск BAT напрямую через cmd...")
+        print("[INSTALL] Fallback: запуск BAT напрямую через cmd...")
 
         # Fallback — прямой запуск BAT (может быть блокирован Defender)
         try:

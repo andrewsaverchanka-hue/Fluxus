@@ -5,6 +5,7 @@ from datetime import datetime, time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal, Slot, QDate, QSize
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QFrame, QSpinBox, QRadioButton, QButtonGroup, QDateEdit,
@@ -72,14 +73,7 @@ class ConnectorPage(QWidget):
     def _make_header_row(self, icon_name: str, text: str,
                          icon_size: int = 28,
                          font_style: str = "pageTitle") -> QHBoxLayout:
-        """Создаёт горизонтальный layout: SVG-иконка слева + текст справа.
-
-        Args:
-            icon_name:  имя SVG-файла в assets/icons/
-            text:       текст заголовка
-            icon_size:  размер иконки в px
-            font_style: имя стиля для QLabel (objectName)
-        """
+        """Создаёт горизонтальный layout: SVG-иконка слева + текст справа."""
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
@@ -174,12 +168,40 @@ class ConnectorPage(QWidget):
         self.mode_hours_rb.setChecked(True)
         self.mode_group.addButton(self.mode_hours_rb, 0)
         period_layout.addWidget(self.mode_hours_rb)
+
+        # ============================================================
+        # QSpinBox часов — явная настройка шрифта/выравнивания/стиля
+        # для корректного отображения "24 ч" в .exe-сборке PyInstaller.
+        # Без этого иногда теряется суффикс в frozen-режиме.
+        # ============================================================
         self.hours_spin = QSpinBox()
         self.hours_spin.setRange(1, 1440)
         self.hours_spin.setValue(24)
         self.hours_spin.setSuffix(" ч")
+        self.hours_spin.setMinimumWidth(80)
         self.hours_spin.setMaximumWidth(100)
         self.hours_spin.setButtonSymbols(QSpinBox.NoButtons)
+        # Явный шрифт — защита от сброса в PyInstaller
+        self.hours_spin.setFont(QFont("Segoe UI", 10))
+        # Выравнивание по центру + явный цвет текста
+        self.hours_spin.setAlignment(Qt.AlignCenter)
+        self.hours_spin.setStyleSheet("""
+            QSpinBox {
+                padding: 4px 8px;
+                color: #e4e5f1;
+                background-color: #2a2b40;
+                border: 1px solid #34354e;
+                border-radius: 6px;
+            }
+            QSpinBox:focus {
+                border: 1px solid #6366f1;
+            }
+        """)
+        self.hours_spin.setToolTip(
+            "Количество часов для скачивания логов.\n"
+            "24 ч = 1 день, 168 ч = 7 дней,\n"
+            "720 ч = 30 дней, 1440 ч = 60 дней."
+        )
         period_layout.addWidget(self.hours_spin)
 
         period_layout.addSpacing(20)
