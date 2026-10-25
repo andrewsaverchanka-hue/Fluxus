@@ -192,6 +192,9 @@ class ConnectorPage(QWidget):
                 background-color: #2a2b40;
                 border: 1px solid #34354e;
                 border-radius: 6px;
+                font-family: "Segoe UI", "Arial", sans-serif;
+                font-size: 10pt;
+                qproperty-alignment: AlignCenter;
             }
             QSpinBox:focus {
                 border: 1px solid #6366f1;

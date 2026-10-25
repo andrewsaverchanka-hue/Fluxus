@@ -38,8 +38,12 @@ jobs:
             --name Fluxus `
             --icon logo.png `
             --add-data "assets;assets" `
-            --add-data "logo.ico;." `
+            --add-data "logo.png;." `
             --add-data "logo_full.png;." `
+            --collect-all PySide6 `
+            --hidden-import PySide6.QtSvg `
+            --hidden-import PySide6.QtSvgWidgets `
+            --hidden-import PySide6.QtNetwork `
             main.py
 
       # ===== 5. Проверяем, что .exe собрался =====
