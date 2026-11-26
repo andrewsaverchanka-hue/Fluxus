@@ -1,0 +1,6 @@
+/target
+/fixtures/*.log
+/fixtures/*.gz
+/fixtures/*.json
+/py/*.so
+__pycache__/

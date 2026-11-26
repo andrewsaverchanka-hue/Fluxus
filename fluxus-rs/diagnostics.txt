@@ -1,0 +1,60 @@
+============================================================
+ Fluxus Rust core - diagnostics
+============================================================
+
+--- Folder --------------------------------------------------
+C:\FluxusRS\fluxus-rs
+
+--- Windows -------------------------------------------------
+
+Microsoft Windows [Version 10.0.26300.9974]
+
+--- Python --------------------------------------------------
+C:\Users\Андрей Саверченко\AppData\Local\Python\bin\python.exe
+Python 3.14.3
+architecture: 64 -bit
+executable: C:\Users\������ ����������\AppData\Local\Python\pythoncore-3.14-64\python.exe
+version: 3.14.3 (tags/v3.14.3:323c59a, Feb  3 2026, 16:04:56) [MSC v.1944 64 bit (AMD64)]
+
+--- Rust ----------------------------------------------------
+C:\Users\Андрей Саверченко\.cargo\bin\rustc.exe
+rustc 1.99.1 (58cf8f9c3 2026-10-13)
+binary: rustc
+commit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67
+commit-date: 2026-10-13
+host: x86_64-pc-windows-msvc
+release: 1.99.1
+LLVM version: 23.1.1
+
+Default host: x86_64-pc-windows-msvc
+rustup home:  C:\Users\Андрей Саверченко\.rustup
+
+installed toolchains
+--------------------
+stable-x86_64-pc-windows-msvc (active, default)
+
+active toolchain
+----------------
+name: stable-x86_64-pc-windows-msvc
+active because: it's the default toolchain
+installed targets:
+  x86_64-pc-windows-msvc
+
+--- Visual Studio C++ toolchain -----------------------------
+C++ build tools NOT FOUND.
+
+This is why the build fails with "link.exe not found".
+Install "Build Tools for Visual Studio 2022" and tick
+the workload "Desktop development with C++".
+https://visualstudio.microsoft.com/visual-cpp-build-tools/
+
+--- Windows SDK ---------------------------------------------
+10.0.22621.0
+10.0.26100.0
+10.0.28000.0
+
+--- Python-fluxus extension -------------------------------
+FOUND ..\fluxus_native.pyd
+FOUND ..\fluxus_adapter.py
+
+--- End -----------------------------------------------------

@@ -1,0 +1,57 @@
+# Builds ONLY the Rust extension on GitHub's Windows runner and uploads
+# fluxus_native.pyd as a downloadable artifact.
+#
+# Use this if you cannot install Visual Studio Build Tools on your PC.
+#
+# How to use:
+#   1. Save as .github/workflows/build-pyd.yml and commit it.
+#   2. Push (the fluxus-rs folder must be in the repository).
+#   3. Open the "Actions" tab -> "Build Rust core (.pyd)" -> Run workflow.
+#   4. When it finishes, download the artifact "fluxus-native-win64-abi3".
+#   5. Put fluxus_native.pyd and fluxus_adapter.py next to your main.py.
+
+name: Build Rust core (.pyd)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'fluxus-rs/**'
+
+jobs:
+  build-pyd:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Rust (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the extension
+        working-directory: fluxus-rs
+        run: |
+          cargo build --release -p fluxus-py
+          copy target\release\fluxus_native.dll fluxus_native.pyd
+          copy py\fluxus_adapter.py fluxus_adapter.py
+          copy py\check_rust_core.py check_rust_core.py
+
+      - name: Verify it imports
+        working-directory: fluxus-rs
+        run: |
+          python -c "import fluxus_native; print('version', fluxus_native.__version__)"
+
+      - name: Upload .pyd
+        uses: actions/upload-artifact@v4
+        with:
+          name: fluxus-native-win64-abi3
+          path: |
+            fluxus-rs/fluxus_native.pyd
+            fluxus-rs/fluxus_adapter.py
+            fluxus-rs/check_rust_core.py
+          if-no-files-found: error

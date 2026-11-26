@@ -1,0 +1,92 @@
+# Drop-in replacement for .github/workflows/build.yml.
+#
+# Builds the Rust core on windows-latest, then packages the PySide6 GUI with
+# PyInstaller. Produces Fluxus.exe on every v*.*.* tag.
+#
+# Copy this file to:  .github/workflows/build.yml
+# (the fluxus-rs folder must be committed to the repository)
+
+name: Build Fluxus Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Rust (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller Pillow
+
+      - name: Build Rust core
+        working-directory: fluxus-rs
+        run: |
+          cargo build --release -p fluxus-py
+          copy target\release\fluxus_native.dll ..\fluxus_native.pyd
+          copy py\fluxus_adapter.py ..\fluxus_adapter.py
+          copy py\check_rust_core.py ..\check_rust_core.py
+
+      - name: Verify the Rust core imports
+        run: python check_rust_core.py
+
+      - name: Build .exe with PyInstaller
+        run: |
+          pyinstaller --onefile --windowed `
+            --name Fluxus `
+            --icon logo.png `
+            --add-data "assets;assets" `
+            --add-data "logo.png;." `
+            --add-data "logo_full.png;." `
+            --collect-all PySide6 `
+            --hidden-import PySide6.QtSvg `
+            --hidden-import PySide6.QtSvgWidgets `
+            --hidden-import PySide6.QtNetwork `
+            --hidden-import fluxus_native `
+            --collect-binaries fluxus_native `
+            main.py
+
+      - name: Verify build
+        run: |
+          if (Test-Path "dist/Fluxus.exe") {
+            Write-Host "OK: Fluxus.exe built"
+            Get-Item "dist/Fluxus.exe" | Format-List Name, Length, LastWriteTime
+          } else {
+            Write-Error "Fluxus.exe not found in dist/"
+            exit 1
+          }
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: Fluxus ${{ github.ref_name }}
+          body: |
+            ## Fluxus ${{ github.ref_name }}
+
+            Built with the Rust parsing core.
+
+            **Download:** `Fluxus.exe` below.
+          files: dist/Fluxus.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,49 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# ===== Virtual environments =====
+venv/
+env/
+.venv/
+.env/
+ENV/
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== Fluxus-specific =====
+# Пользовательский конфиг с паролями SSH и устройствами
+config.json
+
+# Скачанные логи устройств (гигабайты данных)
+downloaded_logs/
+
+# Временные файлы автообновлений
+update_tmp/
+
+# Сохранённые результаты анализа
+*.anl.gz
+
+# Логи приложения (если появятся)
+*.log
+
+# ===== PyInstaller (для будущих сборок .exe) =====
+*.spec

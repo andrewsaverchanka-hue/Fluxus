@@ -1,0 +1,13 @@
+[package]
+name = "fluxus-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+regex = "1"
+memchr = "2"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+chrono = "0.4"
+flate2 = { version = "1", features = ["zlib-rs"] }

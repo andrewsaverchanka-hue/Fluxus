@@ -1,0 +1,59 @@
+FLUXUS RUST CORE - QUICK START
+==============================
+
+WHAT THIS IS
+  A faster parsing engine for Fluxus. Your GUI stays exactly as it is.
+
+WINDOWS - THE WHOLE PROCESS
+  1. Put the "fluxus-rs" folder inside your Fluxus project folder
+     (the one that contains main.py).
+
+  2. Double-click:  fluxus-rs\build.bat
+     It compiles the engine, copies the files into your project and
+     verifies the installation. First run takes a few minutes.
+
+     Requires: Rust (https://rustup.rs), Visual Studio Build Tools 2022 with
+     the "Desktop development with C++" workload, and any 64-bit Python 3.11+
+     (the extension uses the stable ABI, so 3.11-3.14 all work).
+
+     If it says "link.exe not found": the C++ workload is missing.
+     Run diagnose.bat (best from an open Command Prompt):
+         cd /d C:\path\to\Fluxus\fluxus-rs
+         diagnose.bat
+     The report is also saved to fluxus-rs\diagnostics.txt.
+     Details: INTEGRATION_GUIDE.md -> "Fixing link.exe not found".
+
+  3. Add this block to main.py, ABOVE the line
+     "from gui.main_window import MainWindow":
+
+         import os
+         if os.environ.get("FLUXUS_PYTHON_PARSERS") != "1":
+             try:
+                 from fluxus_adapter import install as _install
+                 _install()
+                 print("[Fluxus] Rust core enabled")
+             except Exception as _e:
+                 print(f"[Fluxus] Rust core disabled: {_e}")
+
+  4. Run:  python main.py
+     You should see:  [Fluxus] Rust core enabled
+
+  5. For the .exe, add these two flags to PyInstaller:
+         --hidden-import fluxus_native --collect-binaries fluxus_native
+
+TO TURN IT OFF
+  set FLUXUS_PYTHON_PARSERS=1
+  python main.py
+
+FILES
+  INTEGRATION_GUIDE.md   full step-by-step with troubleshooting
+  WINDOWS_BUILD.md       technical build details and CI
+  README.md              what was ported, benchmarks, parity results
+  fluxus-rs/             Rust sources
+  fluxus-rs/py/          adapter + self-check script
+  fluxus-rs/ci/          ready-made GitHub Actions workflow
+
+NOTE
+  No prebuilt Windows .pyd is included: it must be compiled on Windows (or by
+  GitHub Actions), because a compiled extension only works on the platform and
+  Python version it was built for. build.bat does this for you.

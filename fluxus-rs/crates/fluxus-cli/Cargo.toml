@@ -1,0 +1,12 @@
+[package]
+name = "fluxus-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "fluxus-parse"
+path = "src/main.rs"
+
+[dependencies]
+fluxus-core = { path = "../fluxus-core" }
+serde_json = "1"
